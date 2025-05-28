@@ -1,4 +1,4 @@
-mod core;
+pub mod core;
 mod utils;
 
 use core::{device, prevent_default, setup};

@@ -1,12 +1,17 @@
-use rdev::{listen, Event, EventType};
-use serde::Serialize;
-use serde_json::{json, Value};
+use ipc_channel::ipc::IpcOneShotServer;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::mpsc::{Receiver, Sender};
+use std::time::Duration;
+use std::{env, thread};
 use tauri::{AppHandle, Emitter};
 
 static IS_RUNNING: AtomicBool = AtomicBool::new(false);
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DeviceKind {
     MousePress,
     MouseRelease,
@@ -15,10 +20,10 @@ pub enum DeviceKind {
     KeyboardRelease,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceEvent {
-    kind: DeviceKind,
-    value: Value,
+    pub kind: DeviceKind,
+    pub value: String,
 }
 
 pub fn start_listening(app_handle: AppHandle) {
@@ -28,45 +33,51 @@ pub fn start_listening(app_handle: AppHandle) {
 
     IS_RUNNING.store(true, Ordering::SeqCst);
 
-    let callback = move |event: Event| {
-        let device = match event.event_type {
-            EventType::ButtonPress(button) => DeviceEvent {
-                kind: DeviceKind::MousePress,
-                value: json!(format!("{:?}", button)),
-            },
-            EventType::ButtonRelease(button) => DeviceEvent {
-                kind: DeviceKind::MouseRelease,
-                value: json!(format!("{:?}", button)),
-            },
-            EventType::MouseMove { x, y } => DeviceEvent {
-                kind: DeviceKind::MouseMove,
-                value: json!({ "x": x, "y": y }),
-            },
-            EventType::KeyPress(key) => DeviceEvent {
-                kind: DeviceKind::KeyboardPress,
-                value: json!(format!("{:?}", key)),
-            },
-            EventType::KeyRelease(key) => DeviceEvent {
-                kind: DeviceKind::KeyboardRelease,
-                value: json!(format!("{:?}", key)),
-            },
-            _ => return,
-        };
-
-        if let Err(e) = app_handle.emit("device-changed", device) {
-            eprintln!("Failed to emit event: {:?}", e);
-        }
-    };
-
-    #[cfg(target_os = "macos")]
-    if let Err(e) = listen(callback) {
-        eprintln!("Device listening error: {:?}", e);
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    std::thread::spawn(move || {
-        if let Err(e) = listen(callback) {
-            eprintln!("Device listening error: {:?}", e);
-        }
+    thread::spawn(move || {
+        start_child_loop(app_handle);
     });
+}
+
+fn start_child_loop(app_handle: AppHandle) {
+    loop {
+        let (server, server_name) = IpcOneShotServer::<DeviceEvent>::new().unwrap();
+        println!("Starting server on {}", server_name);
+        let exe = env::current_exe().unwrap();
+        let mut child = Command::new(&exe)
+            .arg("--child")
+            .arg(server_name)
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("failed to spawn child");
+
+        let (rx, _) = server.accept().unwrap();
+
+        let (kill_tx, kill_rx): (Sender<()>, Receiver<()>) = mpsc::channel();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(60));
+            let _ = kill_tx.send(());
+        });
+
+        loop {
+            if kill_rx.try_recv().is_ok() {
+                println!("Timeout, killing child...");
+                let _ = child.kill();
+                let _ = child.wait();
+                println!("Child killed & collected");
+                break;
+            }
+
+            match rx.try_recv_timeout(Duration::from_millis(2000)) {
+                Ok(msg) => {
+                    if let Err(e) = app_handle.emit("device-changed", msg) {
+                        eprintln!("Failed to emit event: {:?}", e);
+                    }
+                }
+                Err(e) => {
+                    println!("Error receiving from child process: {}", e);
+                    continue;
+                }
+            }
+        }
+    }
 }
