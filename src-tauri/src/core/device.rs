@@ -3,8 +3,6 @@ use ipc_channel::ipc::{IpcOneShotServer, IpcReceiver, TryRecvError};
 use serde::{Deserialize, Serialize};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 use std::{env, thread};
 use tauri::{AppHandle, Emitter};
@@ -72,7 +70,7 @@ fn wait_rdev_exit(rx: IpcReceiver<IpcEvent>, mut child: Child, app_handle: AppHa
                         child.kill().unwrap();
                         break;
                     }
-                    _ => match ipc_event.device_event {
+                    "rdev" => match ipc_event.device_event {
                         None => {
                             eprintln!("no device event");
                         }
@@ -82,14 +80,30 @@ fn wait_rdev_exit(rx: IpcReceiver<IpcEvent>, mut child: Child, app_handle: AppHa
                             }
                         }
                     },
+                    _ => {
+                        eprintln!("unknown action: {}", ipc_event.action);
+                    }
                 },
                 Err(TryRecvError::Empty) => {}
                 Err(e) => {
                     eprintln!("Error receiving from child process: {}", e);
+                    match child.try_wait() {
+                        Ok(Some(_)) => { /* 子进程已经退出，无需kill */ }
+                        Ok(None) => {
+                            // 子进程还活着，需要 kill
+                            match child.kill() {
+                                Ok(_) => eprintln!("Force killed child due to channel error"),
+                                Err(err) => eprintln!("Fail to kill child (maybe gone): {:?}", err),
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("don't need kill, 检测出错: {}", err)
+                        }
+                    }
                 }
             },
             Err(e) => {
-                eprintln!("检测子进程出错: {}", e);
+                eprintln!("无需 kill, 检测出错: {}", e);
                 break;
             }
         }
