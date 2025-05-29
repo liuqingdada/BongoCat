@@ -65,11 +65,6 @@ fn wait_rdev_exit(rx: IpcReceiver<IpcEvent>, mut child: Child, app_handle: AppHa
             }
             Ok(None) => match rx.try_recv_timeout(Duration::from_millis(100)) {
                 Ok(ipc_event) => match ipc_event.action.as_str() {
-                    "exit" => {
-                        eprintln!("rdev exiting");
-                        child.kill().unwrap();
-                        break;
-                    }
                     "rdev" => match ipc_event.device_event {
                         None => {
                             eprintln!("no device event");

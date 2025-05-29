@@ -13,19 +13,15 @@ use std::thread::sleep;
 use std::time::Duration;
 
 pub fn run_child() {
-    let cat = Arc::new(CatSender::connect());
+    let cat = CatSender::connect();
     cat.send_ipc_event(IpcEvent::default());
     cat.send_ipc_event(IpcEvent::default());
     cat.send_ipc_event(IpcEvent::default());
     cat.send_ipc_event(IpcEvent::default());
 
-    let cat_clone = cat.clone();
     thread::spawn(move || {
         sleep(Duration::from_secs(60));
-        cat_clone.send_ipc_event(IpcEvent {
-            action: "exit".to_string(),
-            device_event: None,
-        });
+        std::process::exit(0);
     });
 
     let callback = move |event: Event| {
@@ -96,6 +92,7 @@ impl CatSender {
         let sender = self.sender.clone();
         if let Err(e) = sender.send(event) {
             eprintln!("failed to sync ipc_event: {:?}", e);
+            std::process::exit(0xFF);
         }
     }
 }
